@@ -1,0 +1,70 @@
+name: cleanup
+run-name: ${{ inputs.aws_bucket_instance_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_bucket_instance_name:
+        type: string
+        required: true
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout root repo
+        uses: actions/checkout@v4
+        
+      # - name: Get env files
+      #   run: |
+      #     npx --yes dotenv-vault new 
+      #     npx --yes dotenv-vault pull --dotenvMe  ci .env.ci
+    
+      # - name: Load .env file
+      #   run: grep -o '^[^#]*' .env.ci >> "$GITHUB_ENV"
+
+      - run: |
+          echo "xotocross_aws_key_id=$XOTOCROSS_AWS_KEY_ID" >> "$GITHUB_OUTPUT"
+          echo "xotocross_github_ssh_key=$XOTOCROSS_GITHUB_SSH_KEY" >> "$GITHUB_OUTPUT"
+          echo "xotocross_github_ssh_id=$XOTOCROSS_GITHUB_SSH_ID" >> "$GITHUB_OUTPUT"
+          echo "xotocross_aws_access_key=$XOTOCROSS_AWS_ACCESS_KEY" >> "$GITHUB_OUTPUT"
+        id: xotocross_key
+        
+ 
+      - name: Setup terraform cli
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Setup aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ steps.xotocross_key.outputs.xotocross_aws_key_id }}
+          aws-secret-access-key: ${{ steps.xotocross_key.outputs.xotocross_aws_access_key }}
+          aws-region: eu-west-3
+
+      - name: Repository checkout
+        uses: actions/checkout@v4
+
+      - name: Update vars
+        run: |
+          sed -i "s|xotocross_bucket_name|${{ inputs.aws_bucket_instance_name }}|g" vars.tf && sed -i "s|xotocross_bucket_name|${{ inputs.aws_bucket_instance_name }}|g" providers.tf 
+
+      - name: Decode SSH Key and Create terraform.tfvars
+        env:
+          XOTOCROSS_GITHUB_SSH_ID: ${{ steps.xotocross_key.outputs.xotocross_github_ssh_id }}
+        run: |
+          KEY=$(echo $XOTOCROSS_GITHUB_SSH_ID | base64 -d)
+          echo "ssh_public_key=\"$KEY\"" > terraform.tfvars
+            
+      - name: Download terraform.lock.hcl
+        run: aws s3 cp "s3://${{ inputs.aws_bucket_instance_name }}/.terraform.lock.hcl" .
+
+      - name: Initialize terraform dependencies
+        run: terraform init
+
+      - name: Delete terraform resources
+        run: terraform destroy --auto-approve
+
+      - name: Delete files on s3
+        run: aws s3 rm --recursive "s3://${{ inputs.aws_bucket_instance_name }}/state" && aws s3 rm "s3://${{ inputs.aws_bucket_instance_name }}/.terraform.lock.hcl" 
+
+      # - name: Delete bucket
+      #   run: aws s3api delete-bucket --bucket ${{ inputs.aws_bucket_instance_name }} --region eu-west-3
